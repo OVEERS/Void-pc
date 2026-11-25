@@ -82,16 +82,44 @@ class Dispatcher:
                     allowed = await asyncio.wait_for(confirm(req), self.settings.confirm_timeout_s)
                 except TimeoutError:
                     allowed = False
+                except asyncio.CancelledError:
+                    self.db.finish_action(aid, "cancelled", "Запрос подтверждения отменён", 0)
+                    raise
+                except Exception as e:  # noqa: BLE001
+                    log.exception("Не удалось получить подтверждение для инструмента %s", name)
+                    msg = "Не удалось получить подтверждение; действие не выполнялось"
+                    self.db.finish_action(aid, "error", f"{type(e).__name__}: {e}", 0)
+                    return DispatchResult(False, "error", msg, action_id=aid)
             if not allowed:
                 msg = "Действие не подтверждено, отменено"
                 self.db.finish_action(aid, "denied", msg, 0)
                 return DispatchResult(False, "denied", msg, action_id=aid)
 
-        ctx = ToolContext(self.settings, self.db, self.sandbox, self.trash, self.registry,
-                          source, user_id, aid)
+        workspace_id = f"{source}:{user_id or 'anonymous'}"
+        state = self.db.get_workspace_state(workspace_id)
+        working_dir = self.sandbox.home
+        if state is not None:
+            try:
+                candidate = self.sandbox.resolve(state["working_dir"])
+                if candidate.is_dir():
+                    working_dir = candidate
+                else:
+                    log.warning("Рабочая папка %s не найдена; возвращаюсь в корень workspace", candidate)
+                    self.db.set_working_dir(workspace_id, str(self.sandbox.home))
+            except SandboxError:
+                log.warning("Сохранённая рабочая папка пользователя %s недопустима; сбрасываю её", workspace_id)
+                self.db.set_working_dir(workspace_id, str(self.sandbox.home))
+        ctx = ToolContext(
+            self.settings, self.db, self.sandbox, self.trash, self.registry,
+            source, user_id, workspace_id, working_dir, aid,
+        )
         t0 = time.monotonic()
         try:
             res = await self._run(t, ctx, params)
+        except asyncio.CancelledError:
+            ms = int((time.monotonic() - t0) * 1000)
+            self.db.finish_action(aid, "cancelled", "Выполнение отменено", ms)
+            raise
         except TimeoutError:
             ms = int((time.monotonic() - t0) * 1000)
             msg = "Превышено время выполнения"

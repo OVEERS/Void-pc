@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+
 from .sandbox import PathSandbox
 from .tool import ToolError
 from .trash import Trash
@@ -27,6 +29,19 @@ def run_undo(sandbox: PathSandbox, trash: Trash, undo: dict) -> list[str]:
             sandbox.resolve(row["original_path"], allow_root=False)
             restored = trash.restore(int(step["trash_id"]))
             done.append(f"восстановлено: {restored.name}")
+        elif kind == "restore_move":
+            source = sandbox.resolve(step["source"], allow_root=False)
+            target = sandbox.resolve(step["target"], allow_root=False)
+            if source.exists():
+                raise ToolError(f"Место занято, переместить обратно нельзя: {source}")
+            if not target.exists():
+                raise ToolError(f"Не найдено для отката: {target}")
+            source.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.move(str(target), str(source))
+            except OSError as e:
+                raise ToolError(f"Не удалось вернуть объект на место: {e}") from e
+            done.append(f"возвращено: {source.name}")
         else:
             raise ToolError(f"Неизвестный шаг отката: {kind}")
     return done

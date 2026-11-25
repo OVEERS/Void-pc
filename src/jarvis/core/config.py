@@ -20,12 +20,13 @@ class ConfigError(Exception):
 class Secrets:
     telegram_bot_token: str = field(default="", repr=False)
     telegram_allowed_ids: tuple[int, ...] = ()
+    telegram_proxy: str = field(default="", repr=False)
     cloud_api_key: str = field(default="", repr=False)
     cloud_base_url: str = ""
     cloud_model: str = ""
 
     def secret_values(self) -> list[str]:
-        return [v for v in (self.telegram_bot_token, self.cloud_api_key) if v]
+        return [v for v in (self.telegram_bot_token, self.telegram_proxy, self.cloud_api_key) if v]
 
 
 @dataclass(frozen=True)
@@ -40,6 +41,7 @@ class Settings:
     trash_retention_days: int = 30
     cloud_tokens_per_day: int = 50_000
     cloud_tokens_per_month: int = 1_000_000
+    telegram_notify_on_start: bool = True
     secrets: Secrets = field(default_factory=Secrets, repr=False)
 
     @property
@@ -87,6 +89,7 @@ def load_settings(root: Path | str | None = None) -> Settings:
     assistant = cfg.get("assistant", {})
     paths = cfg.get("paths", {})
     limits = cfg.get("limits", {})
+    telegram = cfg.get("telegram", {})
 
     roots_raw = paths.get("allowed_roots") or ["workspace"]
     allowed = tuple(_resolve(root_path, r) for r in roots_raw)
@@ -95,6 +98,7 @@ def load_settings(root: Path | str | None = None) -> Settings:
     secrets = Secrets(
         telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
         telegram_allowed_ids=_parse_ids(os.environ.get("TELEGRAM_ALLOWED_IDS", "")),
+        telegram_proxy=os.environ.get("TELEGRAM_PROXY", ""),
         cloud_api_key=os.environ.get("CLOUD_API_KEY", ""),
         cloud_base_url=os.environ.get("CLOUD_BASE_URL", ""),
         cloud_model=os.environ.get("CLOUD_MODEL", ""),
@@ -111,6 +115,7 @@ def load_settings(root: Path | str | None = None) -> Settings:
         trash_retention_days=int(limits.get("trash_retention_days", 30)),
         cloud_tokens_per_day=int(limits.get("cloud_tokens_per_day", 50_000)),
         cloud_tokens_per_month=int(limits.get("cloud_tokens_per_month", 1_000_000)),
+        telegram_notify_on_start=bool(telegram.get("notify_on_start", True)),
         secrets=secrets,
     )
 

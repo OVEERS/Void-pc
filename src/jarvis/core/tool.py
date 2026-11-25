@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from jsonschema import Draft202012Validator
@@ -45,6 +46,8 @@ class ToolContext:
     registry: "ToolRegistry"
     source: str
     user_id: str | None
+    workspace_id: str
+    working_dir: Path
     action_id: int
 
 

@@ -32,11 +32,12 @@ CREATE TABLE IF NOT EXISTS token_usage (
     purpose           TEXT
 );
 CREATE TABLE IF NOT EXISTS history (
-    id     INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts     TEXT NOT NULL,
-    role   TEXT NOT NULL,
-    source TEXT NOT NULL,
-    text   TEXT NOT NULL
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts      TEXT NOT NULL,
+    role    TEXT NOT NULL,
+    source  TEXT NOT NULL,
+    user_id TEXT,
+    text    TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS trash (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,8 +47,24 @@ CREATE TABLE IF NOT EXISTS trash (
     action_id     INTEGER,
     restored      INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS workspace_state (
+    owner          TEXT PRIMARY KEY,
+    working_dir    TEXT NOT NULL,
+    clipboard_mode TEXT,
+    clipboard_path TEXT
+);
+CREATE TABLE IF NOT EXISTS pending_edits (
+    token        TEXT PRIMARY KEY,
+    owner        TEXT NOT NULL,
+    path         TEXT NOT NULL,
+    source_hash  TEXT NOT NULL,
+    new_content  TEXT NOT NULL,
+    created_at   TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS idx_actions_ts ON actions(ts);
 CREATE INDEX IF NOT EXISTS idx_tokens_ts ON token_usage(ts);
+CREATE INDEX IF NOT EXISTS idx_pending_edits_created ON pending_edits(created_at);
+CREATE INDEX IF NOT EXISTS idx_actions_owner ON actions(source, user_id, id);
 """
 
 
@@ -71,6 +88,12 @@ class Database:
         with self._lock:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.executescript(SCHEMA)
+            history_columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(history)")}
+            if "user_id" not in history_columns:
+                self._conn.execute("ALTER TABLE history ADD COLUMN user_id TEXT")
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_history_owner ON history(source, user_id, id)"
+            )
 
     # --- низкоуровневое -------------------------------------------------
     def _insert(self, sql: str, args: tuple = ()) -> int:
@@ -106,18 +129,26 @@ class Database:
             (status, _clip(result, 1000), duration_ms, json.dumps(undo) if undo else None, action_id),
         )
 
-    def last_undoable(self) -> sqlite3.Row | None:
+    def last_undoable(self, source: str, user_id: str | None) -> sqlite3.Row | None:
         rows = self._query(
             "SELECT * FROM actions WHERE undo IS NOT NULL AND undone=0 AND status='ok' "
-            "ORDER BY id DESC LIMIT 1"
+            "AND source=? AND user_id IS ? ORDER BY id DESC LIMIT 1",
+            (source, user_id),
         )
         return rows[0] if rows else None
 
     def mark_undone(self, action_id: int) -> None:
         self._execute("UPDATE actions SET undone=1 WHERE id=?", (action_id,))
 
-    def recent_actions(self, limit: int = 20) -> list[sqlite3.Row]:
-        return self._query("SELECT * FROM actions ORDER BY id DESC LIMIT ?", (limit,))
+    def recent_actions(
+        self, limit: int = 20, *, source: str | None = None, user_id: str | None = None
+    ) -> list[sqlite3.Row]:
+        if source is None:
+            return self._query("SELECT * FROM actions ORDER BY id DESC LIMIT ?", (limit,))
+        return self._query(
+            "SELECT * FROM actions WHERE source=? AND user_id IS ? ORDER BY id DESC LIMIT ?",
+            (source, user_id, limit),
+        )
 
     # --- токены облака --------------------------------------------------
     def add_tokens(self, provider: str, model: str, prompt: int, completion: int, purpose: str = "") -> None:
@@ -135,10 +166,10 @@ class Database:
         return int(rows[0]["n"])
 
     # --- история диалога ------------------------------------------------
-    def add_history(self, role: str, source: str, text: str) -> None:
+    def add_history(self, role: str, source: str, text: str, user_id: str | None = None) -> None:
         self._insert(
-            "INSERT INTO history(ts, role, source, text) VALUES (?,?,?,?)",
-            (now_iso(), role, source, _clip(text, 4000)),
+            "INSERT INTO history(ts, role, source, user_id, text) VALUES (?,?,?,?,?)",
+            (now_iso(), role, source, user_id, _clip(text, 4000)),
         )
 
     # --- корзина --------------------------------------------------------
@@ -160,3 +191,51 @@ class Database:
 
     def delete_trash_row(self, trash_id: int) -> None:
         self._execute("DELETE FROM trash WHERE id=?", (trash_id,))
+
+    # --- состояние рабочего пространства ------------------------------
+    def get_workspace_state(self, owner: str) -> sqlite3.Row | None:
+        rows = self._query("SELECT * FROM workspace_state WHERE owner=?", (owner,))
+        return rows[0] if rows else None
+
+    def set_working_dir(self, owner: str, path: str) -> None:
+        self._execute(
+            "INSERT INTO workspace_state(owner, working_dir) VALUES (?, ?) "
+            "ON CONFLICT(owner) DO UPDATE SET working_dir=excluded.working_dir",
+            (owner, path),
+        )
+
+    def set_clipboard(self, owner: str, mode: str, path: str, working_dir: str) -> None:
+        self._execute(
+            "INSERT INTO workspace_state(owner, working_dir, clipboard_mode, clipboard_path) "
+            "VALUES (?, ?, ?, ?) ON CONFLICT(owner) DO UPDATE SET "
+            "clipboard_mode=excluded.clipboard_mode, clipboard_path=excluded.clipboard_path",
+            (owner, working_dir, mode, path),
+        )
+
+    def clear_clipboard(self, owner: str) -> None:
+        self._execute(
+            "UPDATE workspace_state SET clipboard_mode=NULL, clipboard_path=NULL WHERE owner=?",
+            (owner,),
+        )
+
+    # --- предпросмотры редактирования ----------------------------------
+    def add_pending_edit(
+        self, token: str, owner: str, path: str, source_hash: str, new_content: str
+    ) -> None:
+        self._insert(
+            "INSERT INTO pending_edits(token, owner, path, source_hash, new_content, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (token, owner, path, source_hash, new_content, now_iso()),
+        )
+
+    def get_pending_edit(self, token: str, owner: str) -> sqlite3.Row | None:
+        rows = self._query(
+            "SELECT * FROM pending_edits WHERE token=? AND owner=?", (token, owner)
+        )
+        return rows[0] if rows else None
+
+    def delete_pending_edit(self, token: str, owner: str) -> None:
+        self._execute("DELETE FROM pending_edits WHERE token=? AND owner=?", (token, owner))
+
+    def delete_expired_pending_edits(self, cutoff_iso: str) -> int:
+        return self._execute("DELETE FROM pending_edits WHERE created_at < ?", (cutoff_iso,))

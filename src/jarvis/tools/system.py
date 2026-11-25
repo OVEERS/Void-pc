@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ..core.help import format_tools_help
 from ..core.tool import Risk, ToolContext, ToolError, ToolResult, tool
 from ..core.undo import run_undo
 
@@ -11,14 +12,12 @@ def ping(ctx: ToolContext) -> str:
 
 @tool("tools_help", "Показать список доступных функций с описанием и уровнем риска.")
 def tools_help(ctx: ToolContext) -> ToolResult:
-    icons = {"green": "🟢", "yellow": "🟡", "red": "🔴"}
-    lines = [f"{icons[t.risk.value]} {t.name}: {t.description}" for t in ctx.registry.all()]
-    return ToolResult(True, "\n".join(lines), data=ctx.registry.describe())
+    return ToolResult(True, format_tools_help(ctx.registry), data=ctx.registry.describe())
 
 
 @tool("undo_last", "Откатить последнее обратимое действие (создание, запись, удаление).", risk=Risk.YELLOW)
 def undo_last(ctx: ToolContext) -> ToolResult:
-    row = ctx.db.last_undoable()
+    row = ctx.db.last_undoable(ctx.source, ctx.user_id)
     if row is None:
         raise ToolError("Нечего откатывать")
     import json

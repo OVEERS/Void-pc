@@ -39,12 +39,48 @@ def summarize(values: list[float]) -> dict:
     return {"avg": round(statistics.fmean(values), 2), "max": round(max(values), 2)} if values else {}
 
 
+def disk_usage_snapshot() -> list[dict]:
+    disks = []
+    try:
+        partitions = psutil.disk_partitions(all=False)
+    except (OSError, psutil.Error):
+        return disks
+    for partition in partitions:
+        try:
+            usage = psutil.disk_usage(partition.mountpoint)
+        except (OSError, psutil.Error):
+            continue
+        disks.append({
+            "device": partition.device,
+            "mountpoint": partition.mountpoint,
+            "total_gb": round(usage.total / 2**30, 2),
+            "used_gb": round(usage.used / 2**30, 2),
+            "free_gb": round(usage.free / 2**30, 2),
+            "percent": usage.percent,
+        })
+    return disks
+
+
+def disk_io_snapshot() -> tuple[int, int] | None:
+    try:
+        counters = psutil.disk_io_counters()
+    except (OSError, psutil.Error):
+        return None
+    if counters is None:
+        return None
+    return int(counters.read_bytes), int(counters.write_bytes)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--seconds", type=int, default=60)
     ap.add_argument("--interval", type=float, default=1.0)
     ap.add_argument("--label", default="baseline")
     args = ap.parse_args()
+    if args.seconds <= 0:
+        ap.error("--seconds must be positive")
+    if args.interval <= 0:
+        ap.error("--interval must be positive")
 
     procs = list(psutil.process_iter(["pid", "name"]))
     for p in procs:
@@ -55,12 +91,19 @@ def main() -> None:
     psutil.cpu_percent(None)
 
     cpu, ram, gpu_util, gpu_mem = [], [], [], []
+    disk_read_mb, disk_write_mb = [], []
+    previous_disk_io = disk_io_snapshot()
     t_end = time.monotonic() + args.seconds
     print(f"Замер {args.seconds} с... ничего тяжёлого не запускай.")
     while time.monotonic() < t_end:
         time.sleep(args.interval)
         cpu.append(psutil.cpu_percent(None))
         ram.append(psutil.virtual_memory().percent)
+        current_disk_io = disk_io_snapshot()
+        if previous_disk_io is not None and current_disk_io is not None:
+            disk_read_mb.append(max(0, current_disk_io[0] - previous_disk_io[0]) / 2**20)
+            disk_write_mb.append(max(0, current_disk_io[1] - previous_disk_io[1]) / 2**20)
+        previous_disk_io = current_disk_io
         g = gpu_sample()
         if g:
             gpu_util.append(g["util"])
@@ -87,6 +130,11 @@ def main() -> None:
         "processes": len(psutil.pids()),
         "gpu_util_percent": summarize(gpu_util),
         "gpu_mem_used_mb": summarize(gpu_mem),
+        "disks": disk_usage_snapshot(),
+        "disk_io_mb": {
+            "read_total": round(sum(disk_read_mb), 2),
+            "write_total": round(sum(disk_write_mb), 2),
+        },
         "top_cpu": top_cpu,
         "top_ram": top_ram,
     }
@@ -98,6 +146,11 @@ def main() -> None:
     print(f"CPU: {report['cpu_percent']}  RAM%: {report['ram_percent']}  процессов: {report['processes']}")
     if gpu_util:
         print(f"GPU: {report['gpu_util_percent']}  VRAM МБ: {report['gpu_mem_used_mb']}")
+    print("Диски:", "; ".join(
+        f"{d['mountpoint']} {d['percent']}% занято, свободно {d['free_gb']} ГБ" for d in report["disks"]
+    ) or "нет данных")
+    print(f"Диск I/O за период: чтение {report['disk_io_mb']['read_total']} МБ, "
+          f"запись {report['disk_io_mb']['write_total']} МБ")
     print("Топ по CPU:", ", ".join(f"{t['name']} {t['cpu_avg_pct']}%" for t in top_cpu[:5]))
     print("Топ по RAM:", ", ".join(f"{t['name']} {t['rss_mb']} МБ" for t in top_ram[:5]))
     print(f"Сохранено: {out}")

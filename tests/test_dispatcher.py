@@ -12,7 +12,7 @@ def test_unknown_tool(call):
 
 
 def test_invalid_params(call):
-    r = call("fs_list", {})  # нет path
+    r = call("fs_search", {})  # нет path и pattern
     assert r.status == "invalid"
     r = call("fs_list", {"path": "x", "лишнее": 1})
     assert r.status == "invalid"
@@ -41,6 +41,58 @@ def test_confirm_timeout_is_denial(call, app):
 
     assert call("fs_delete", {"path": "a.txt"}, confirm=slow).status == "denied"
     assert (app.sandbox.home / "a.txt").exists()
+
+
+def test_confirm_failure_is_reported_and_logged(call, app):
+    (app.sandbox.home / "a.txt").write_text("x")
+
+    async def broken(_):
+        raise ConnectionError("telegram offline")
+
+    result = call("fs_delete", {"path": "a.txt"}, confirm=broken)
+    assert result.status == "error"
+    assert result.message.startswith("\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c")
+    assert (app.sandbox.home / "a.txt").exists()
+    assert app.db.recent_actions(1)[0]["status"] == "error"
+
+
+def test_cancelled_confirmation_is_audited(app):
+    async def scenario():
+        started = asyncio.Event()
+
+        async def wait_forever(_):
+            started.set()
+            await asyncio.Event().wait()
+
+        task = asyncio.create_task(app.dispatcher.call(
+            "fs_delete", {"path": "unused"}, source="test", confirm=wait_forever
+        ))
+        await started.wait()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        else:
+            raise AssertionError("Cancellation should propagate")
+
+    asyncio.run(scenario())
+    assert app.db.recent_actions(1)[0]["status"] == "cancelled"
+
+
+def test_undo_is_scoped_to_source_and_user(app):
+    async def invoke(name, source, user_id, params=None):
+        return await app.dispatcher.call(name, params or {}, source=source, user_id=user_id)
+
+    async def scenario():
+        assert (await invoke("fs_mkdir", "telegram", "11", {"path": "owned"})).ok
+        denied = await invoke("undo_last", "telegram", "22")
+        assert not denied.ok
+        assert (app.sandbox.home / "owned").is_dir()
+        assert (await invoke("undo_last", "telegram", "11")).ok
+        assert not (app.sandbox.home / "owned").exists()
+
+    asyncio.run(scenario())
 
 
 def test_sandbox_denied_and_logged(call, app):

@@ -1,4 +1,4 @@
-# Регистрирует автозапуск Jarvis при входе в Windows. Права администратора НЕ нужны.
+﻿# Регистрирует автозапуск Jarvis при входе в Windows. Права администратора НЕ нужны.
 # Запуск (из корня проекта):  powershell -ExecutionPolicy Bypass -File scripts\install_autostart.ps1
 param([string]$TaskName = "JarvisPC")
 
@@ -16,6 +16,6 @@ $settings = New-ScheduledTaskSettingsSet `
 $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
-    -Settings $settings -Principal $principal -Force | Out-Null
+    -Settings $settings -Principal $principal -Description "Jarvis PC background service" -Force | Out-Null
 Write-Host "Задача '$TaskName' создана. Запустить сейчас: Start-ScheduledTask -TaskName $TaskName"
 Write-Host "Проверить: Get-ScheduledTaskInfo -TaskName $TaskName ; лог: data\logs\jarvis.log"

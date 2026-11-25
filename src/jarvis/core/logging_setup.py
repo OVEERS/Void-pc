@@ -34,7 +34,7 @@ def setup_logging(settings: Settings, level: int = logging.INFO) -> None:
         root.removeHandler(h)
 
     file_h = RotatingFileHandler(
-        settings.log_dir / "jarvis.log", maxBytes=2_000_000, backupCount=5, encoding="utf-8"
+        settings.log_dir / "jarvis.log", maxBytes=2_000_000, backupCount=5, encoding="utf-8-sig"
     )
     file_h.setFormatter(fmt)
     file_h.addFilter(redact)

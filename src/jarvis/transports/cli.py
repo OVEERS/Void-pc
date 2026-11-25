@@ -1,50 +1,53 @@
 from __future__ import annotations
 
 import asyncio
-import json
+import sys
+from pathlib import Path
 
 from ..core.app import App
 from ..core.dispatcher import ConfirmRequest
+from .chat import ChatController
 
 HELP = (
-    "Формат: <функция> [JSON-параметры]\n"
-    '  пример: fs_mkdir {"path": "проекты/тест"}\n'
-    "Команды: tools (список функций), history (последние действия), quit"
+    "Введи help для списка команд и готовых примеров.\n"
+    'Например: mkdir "мои файлы" или ls.\n'
+    "Если забыть параметры команды, Jarvis покажет что ввести."
 )
 
 
-async def _confirm(req: ConfirmRequest) -> bool:
-    answer = await asyncio.to_thread(input, f"🔴 Подтвердить?\n{req.summary()}\n[да/нет] > ")
-    return answer.strip().lower() in {"да", "д", "y", "yes"}
+class CliPort:
+    async def send_text(self, text: str) -> None:
+        _print_safe(text)
+
+    async def send_file(self, path: Path) -> None:
+        _print_safe(f"(файл для отправки: {path})")
+
+    async def ask_confirm(self, req: ConfirmRequest) -> bool:
+        answer = await asyncio.to_thread(input, f"Подтвердить?\n{req.summary()}\n[да/нет] > ")
+        return answer.strip().lower() in {"да", "д", "y", "yes"}
+
+
+def _print_safe(text: str) -> None:
+    """Выводит текст даже когда кодировка консоли Windows не поддерживает Unicode-символы."""
+    stream = sys.stdout
+    try:
+        print(text, file=stream)
+    except UnicodeEncodeError:
+        encoding = getattr(stream, "encoding", None) or "utf-8"
+        safe = text.encode(encoding, errors="replace").decode(encoding)
+        print(safe, file=stream)
 
 
 async def run_cli(app: App) -> None:
     name = app.settings.assistant_name
+    chat = ChatController(app, source="cli")
+    port = CliPort()
     print(f"{name} (CLI). {HELP}")
     while True:
         try:
             line = (await asyncio.to_thread(input, f"{name}> ")).strip()
         except (EOFError, KeyboardInterrupt):
             break
-        if not line:
-            continue
         if line in {"quit", "exit"}:
             break
-        if line == "history":
-            for r in app.db.recent_actions(15):
-                print(f"#{r['id']} {r['ts']} {r['tool']} [{r['status']}] {r['result'] or ''}")
-            continue
-        if line == "tools":
-            line = "tools_help"
-
-        tool_name, _, rest = line.partition(" ")
-        try:
-            params = json.loads(rest) if rest.strip() else {}
-            if not isinstance(params, dict):
-                raise ValueError("параметры должны быть JSON-объектом")
-        except ValueError as e:
-            print(f"❌ Не разобрал параметры: {e}")
-            continue
-
-        res = await app.dispatcher.call(tool_name, params, source="cli", user_id="local", confirm=_confirm)
-        print(("✅ " if res.ok else "❌ ") + res.message)
+        await chat.handle_text("local", line, port)

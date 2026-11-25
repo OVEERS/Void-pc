@@ -15,10 +15,13 @@ def test_write_no_overwrite_by_default(call, app):
     assert (app.sandbox.home / "n.txt").read_text() == "1"
 
 
-def test_overwrite_and_undo_restores_old(call, app):
+def test_preview_apply_and_undo_restores_old(call, app):
     f = app.sandbox.home / "n.txt"
     call("fs_write_text", {"path": "n.txt", "content": "old"})
-    assert call("fs_write_text", {"path": "n.txt", "content": "new", "overwrite": True}).ok
+    preview = call("fs_preview_write", {"path": "n.txt", "content": "new"})
+    assert preview.ok and "-old" in preview.message and "+new" in preview.message
+    assert f.read_text() == "old"
+    assert call("fs_apply_edit", {"token": preview.data["token"]}, confirm=yes).ok
     assert f.read_text() == "new"
     assert call("undo_last").ok
     assert f.read_text() == "old"

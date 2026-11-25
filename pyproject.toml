@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "jarvis-pc"
+name = "void-pc"
 version = "0.1.0"
 description = "Персональный голосовой ассистент для управления ПК"
 requires-python = ">=3.11"
@@ -11,6 +11,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "jsonschema>=4.20",
     "psutil>=5.9",
+    "aiogram>=3.13",
 ]
 
 [project.optional-dependencies]

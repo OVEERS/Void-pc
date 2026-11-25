@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 from typing import Iterable
 
-_WIN_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+WIN_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 
 
 class SandboxError(Exception):
@@ -41,7 +41,7 @@ class PathSandbox:
     def home(self) -> Path:
         return self._home
 
-    def resolve(self, raw: str, *, allow_root: bool = True) -> Path:
+    def resolve(self, raw: str, *, allow_root: bool = True, base: Path | None = None) -> Path:
         if not isinstance(raw, str) or not raw.strip():
             raise SandboxError("Пустой путь")
         if "\x00" in raw:
@@ -52,12 +52,12 @@ class PathSandbox:
             raise SandboxError("Двоеточие в пути не поддерживается")
         if os.name == "nt":
             for part in Path(raw).parts:
-                if part.split(".")[0].rstrip(" ").upper() in _WIN_RESERVED:
+                if part.split(".")[0].rstrip(" ").upper() in WIN_RESERVED:
                     raise SandboxError("Зарезервированное имя устройства")
 
         p = Path(raw).expanduser()
         if not p.is_absolute():
-            p = self._home / p
+            p = (base or self._home) / p
 
         real = _canon(p)
         if not any(_inside(real, r) for r in self._roots):

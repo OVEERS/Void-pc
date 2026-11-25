@@ -54,11 +54,13 @@ def test_empty_and_null(sb):
             s.resolve(bad)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="симлинки на Windows требуют прав; проверь вручную")
 def test_symlink_escape_blocked(sb, tmp_path):
     s, root = sb
     outside = tmp_path / "outside"
     outside.mkdir()
-    os.symlink(outside, root / "link")
+    try:
+        os.symlink(outside, root / "link", target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("создание симлинков недоступно в этой Windows-конфигурации")
     with pytest.raises(SandboxError):
         s.resolve("link/file.txt")
